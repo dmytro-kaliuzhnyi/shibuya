@@ -176,6 +176,82 @@ else
   fi
 fi
 
+section "systemd: цикл розбору Slack"
+# Кожні 30 хв у робочі години. Поза ними не турбуємо: чернетка о 3:00
+# однаково чекатиме до ранку, а ліміт підписки витрачений.
+write_user_file ".config/systemd/user/slack-loop.service" 0644 <<EOF
+[Unit]
+Description=Розбір Slack: дайджест, чернетки, нотифікація в Telegram
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${USER_HOME}/hq/scripts/slack-loop.sh
+TimeoutStartSec=900
+EOF
+
+write_user_file ".config/systemd/user/slack-loop.timer" 0644 <<'EOF'
+[Unit]
+Description=Розбирати Slack кожні 30 хвилин у робочі години
+
+[Timer]
+OnCalendar=*-*-* 08..20:00,30:00
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/systemd"
+if [ -d "/run/user/${UID_N}" ]; then
+  uctl daemon-reload || true
+  if uctl enable --now slack-loop.timer >/dev/null 2>&1; then
+    ok "цикл Slack увімкнено: кожні 30 хв, 08:00-20:30"
+  else
+    warn "slack-loop.timer не увімкнувся"
+  fi
+fi
+
+section "systemd: щоденні нагадування про задачі"
+# Репозиторій сам подзвонити не може — у цьому й був сенс Reminders,
+# від яких відмовились. Тому раз на день дивимось tasks.md і шлемо те,
+# що горить. Якщо не горить нічого — скрипт мовчить, спаму не буде.
+write_user_file ".config/systemd/user/tasks-due.service" 0644 <<EOF
+[Unit]
+Description=Нагадати про задачі, яким настає строк
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=${USER_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${USER_HOME}/hq/scripts/tasks-due.py --notify
+EOF
+
+write_user_file ".config/systemd/user/tasks-due.timer" 0644 <<'EOF'
+[Unit]
+Description=Щоденне зведення задач
+
+[Timer]
+OnCalendar=*-*-* 09:05
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/systemd"
+if [ -d "/run/user/${UID_N}" ]; then
+  uctl daemon-reload || true
+  if uctl enable --now tasks-due.timer >/dev/null 2>&1; then
+    ok "нагадування про задачі: щодня о 9:05"
+  else
+    warn "tasks-due.timer не увімкнувся"
+  fi
+fi
+
 section "підсумок"
 as_user bash -lc 'command -v bun >/dev/null' \
   && ok "bun у PATH" \
