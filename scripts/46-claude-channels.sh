@@ -59,52 +59,123 @@ HQ="${HQ_DIR:-$HOME/hq}"
 SESSION="hq"
 CHANNEL="plugin:telegram@claude-plugins-official"
 
+# Під systemd оточення мінімальне: ні ~/.local/bin, ні ~/.bun/bin у PATH.
+# Через інтерактивний shell це не видно — там PATH повний, і скрипт
+# «працює». Тому задаємо явно, а не покладаємось на того, хто нас запустив.
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
+
+CLAUDE="$(command -v claude || echo "$HOME/.local/bin/claude")"
+[ -x "$CLAUDE" ] || { echo "не знайшов claude (шукав у $HOME/.local/bin)"; exit 1; }
+
 [ -d "$HQ" ] || { echo "немає $HQ — спершу клонуй життєвий репозиторій"; exit 1; }
 
 # Особистий профіль. CLAUDE_CONFIG_DIR не виставляти:
 # у Claude Code дефолт — це відсутність змінної, а не $HOME/.claude.
 unset CLAUDE_CONFIG_DIR
 
+channel_up() { pgrep -f "telegram/.*server.ts" >/dev/null 2>&1 \
+                || pgrep -f "bun.*--silent start" >/dev/null 2>&1; }
+
 if tmux has-session -t "$SESSION" 2>/dev/null; then
-  echo "сесія '$SESSION' вже жива. Підчепитись: tmux attach -t $SESSION"
-  exit 0
+  if channel_up; then
+    echo "сесія '$SESSION' жива, канал полить Telegram"
+    exit 0
+  fi
+  # Сесія є, каналу немає — це зламаний стан: бот мовчатиме, а зовні
+  # все виглядає працюючим. Краще перезапустити, ніж лишити німим.
+  echo "сесія '$SESSION' жива, але канал не працює — перезапускаю"
+  tmux kill-session -t "$SESSION" 2>/dev/null
+  sleep 2
 fi
 
 cd "$HQ"
 git pull --rebase --autostash --quiet 2>/dev/null || true
 
+# Абсолютний шлях і явний PATH усередині сесії: tmux запускає команду
+# через `zsh -c`, а той PATH з ~/.local/bin не успадковує.
 tmux new-session -d -s "$SESSION" -c "$HQ" \
-  "claude --channels $CHANNEL; exec bash -l"
+  "export PATH='$PATH'; '$CLAUDE' --channels $CHANNEL; exec bash -l"
 echo "сесію '$SESSION' піднято в $HQ з каналом $CHANNEL"
 
-# Канальний MCP-сервер часом не піднімається на старті (research preview).
-# Лікується Reconnect у /mcp, але про це треба знати — тому перевіряємо самі.
 printf "чекаю на канальний сервер"
 for i in $(seq 1 15); do
-  if pgrep -f "telegram/.*server.ts" >/dev/null 2>&1 || pgrep -f "bun.*--silent start" >/dev/null 2>&1; then
+  if channel_up; then
     echo " — ✔ полить Telegram"
-    echo "підчепитись: tmux attach -t $SESSION   (зсередини tmux: Ctrl-a s)"
     exit 0
   fi
   printf "."; sleep 2
 done
 
-cat <<'WARN'
- — ✘ НЕ ПІДНЯВСЯ
-
-Канал зареєстровано, але MCP-сервер плагіна не стартував: бот мовчатиме.
-Полагодити всередині сесії:
-
-    tmux attach -t hq        (зсередини tmux: Ctrl-a s, обрати hq)
-    /mcp  →  plugin:telegram:telegram  →  Reconnect
-
-Перевірити ззовні:  pgrep -af "server.ts"
-WARN
+echo " — ✘ НЕ ПІДНЯВСЯ"
+echo "Канал зареєстровано, але MCP-сервер плагіна не стартував: бот мовчатиме."
+echo "Полагодити зсередини сесії:  /mcp → plugin:telegram:telegram → Reconnect"
+echo "Перемкнутись у сесію:        tmux switch-client -t $SESSION"
 exit 1
 LAUNCH
 ok "~/bin/hq-assistant.sh"
 
 # ------------------------------------------------------------- перевірка ---
+section "systemd: тримати сесію живою"
+# Сесія вмирає, якщо зайняти її вікно чимось іншим (реальний випадок: nano
+# у тому ж вікні). Таймер щоп'ять хвилин запускає ідемпотентний запускач:
+# жива й здорова — нічого не робить, впала або без каналу — піднімає.
+write_user_file ".config/systemd/user/hq-assistant.service" 0644 <<EOF
+[Unit]
+Description=Життєвий асистент: сесія Claude Code з Telegram-каналом
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${USER_HOME}/bin/hq-assistant.sh
+# exit 1 = канал не піднявся. Не тягнемо це в "failed" юніта:
+# наступний тік таймера спробує знову.
+SuccessExitStatus=0 1
+EOF
+
+write_user_file ".config/systemd/user/hq-assistant.timer" 0644 <<'EOF'
+[Unit]
+Description=Перевіряти сесію асистента кожні 5 хвилин
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# write_file створює батьківські каталоги через install -D від root,
+# тому ~/.config/systemd/ лишається root:root і systemd не може покласти
+# туди symlink у timers.target.wants. Повертаємо власника.
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/systemd"
+
+# Без linger user-юніти вмирають разом із SSH-сесією — тобто рівно тоді,
+# коли вони найпотрібніші.
+if loginctl show-user "$USER_NAME" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
+  skip "linger уже увімкнено"
+else
+  loginctl enable-linger "$USER_NAME" && ok "linger увімкнено для $USER_NAME"
+fi
+
+# systemctl --user через sudo -u не працює без шини користувача:
+# потрібен XDG_RUNTIME_DIR, інакше "Failed to connect to bus".
+UID_N="$(id -u "$USER_NAME")"
+uctl() { as_user env XDG_RUNTIME_DIR="/run/user/${UID_N}" systemctl --user "$@"; }
+
+if [ ! -d "/run/user/${UID_N}" ]; then
+  warn "немає /run/user/${UID_N} — увімкни linger і перезапусти цей крок"
+else
+  uctl daemon-reload || warn "daemon-reload не пройшов"
+  if uctl enable --now hq-assistant.timer >/dev/null 2>&1; then
+    ok "таймер увімкнено: $(uctl list-timers hq-assistant.timer --no-pager 2>/dev/null | sed -n 2p | cut -c1-60)"
+  else
+    warn "таймер не увімкнувся — перевір: systemctl --user status hq-assistant.timer"
+  fi
+fi
+
 section "підсумок"
 as_user bash -lc 'command -v bun >/dev/null' \
   && ok "bun у PATH" \
