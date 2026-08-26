@@ -76,7 +76,31 @@ git pull --rebase --autostash --quiet 2>/dev/null || true
 tmux new-session -d -s "$SESSION" -c "$HQ" \
   "claude --channels $CHANNEL; exec bash -l"
 echo "сесію '$SESSION' піднято в $HQ з каналом $CHANNEL"
-echo "підчепитись: tmux attach -t $SESSION"
+
+# Канальний MCP-сервер часом не піднімається на старті (research preview).
+# Лікується Reconnect у /mcp, але про це треба знати — тому перевіряємо самі.
+printf "чекаю на канальний сервер"
+for i in $(seq 1 15); do
+  if pgrep -f "telegram/.*server.ts" >/dev/null 2>&1 || pgrep -f "bun.*--silent start" >/dev/null 2>&1; then
+    echo " — ✔ полить Telegram"
+    echo "підчепитись: tmux attach -t $SESSION   (зсередини tmux: Ctrl-a s)"
+    exit 0
+  fi
+  printf "."; sleep 2
+done
+
+cat <<'WARN'
+ — ✘ НЕ ПІДНЯВСЯ
+
+Канал зареєстровано, але MCP-сервер плагіна не стартував: бот мовчатиме.
+Полагодити всередині сесії:
+
+    tmux attach -t hq        (зсередини tmux: Ctrl-a s, обрати hq)
+    /mcp  →  plugin:telegram:telegram  →  Reconnect
+
+Перевірити ззовні:  pgrep -af "server.ts"
+WARN
+exit 1
 LAUNCH
 ok "~/bin/hq-assistant.sh"
 
