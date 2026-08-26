@@ -16,6 +16,12 @@ WITH_PT="${SHIBUYA_WITH_PT:-0}"
 GIT_NAME="${SHIBUYA_GIT_NAME:-Dmitriy Kaluzhniy}"
 GIT_EMAIL="${SHIBUYA_GIT_EMAIL:-dmitriy.kaluzhniy@skelar.tech}"
 
+# Personal identity, used for ~/hq (the life repo). Kept separate from the work
+# one for the same reason as on the Mac: an accidental commit under the wrong
+# name is worse than a commit that refuses to happen.
+GIT_PERSONAL_NAME="${SHIBUYA_GIT_PERSONAL_NAME:-Dmytro Kaliuzhnyi}"
+GIT_PERSONAL_EMAIL="${SHIBUYA_GIT_PERSONAL_EMAIL:-koinoyokan171@gmail.com}"
+
 install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$SSH_DIR"
 
 # -------------------------------------------------------------- keys ------
@@ -35,6 +41,11 @@ gen_key() {
 
 gen_key id_lvn "shibuya-pi:skelar"
 gen_key id_gh  "shibuya-pi:personal"
+# NOTE: id_gh was meant to be the personal key, but its public half ended up on
+# the WORK GitHub account — `ssh -T git@github.com` from the Pi greets
+# dmitriy-kaluzhniy-liven. A key can only live on one GitHub account, so instead
+# of untangling that we add a dedicated one for the personal account.
+gen_key id_personal "shibuya-pi:personal-github"
 if [[ "$WITH_PT" == "1" ]]; then
   gen_key id_pt "shibuya-pi:pt"
 else
@@ -66,6 +77,12 @@ Host github.com-lvn
     IdentityFile ~/.ssh/id_lvn
     IdentitiesOnly yes
 ${PT_BLOCK}
+Host github.com-personal
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_personal
+    IdentitiesOnly yes
+
 Host github.com
     HostName github.com
     User git
@@ -95,6 +112,14 @@ write_file "${USER_HOME}/.gitconfig-skelar" 0644 "${USER_NAME}:${USER_NAME}" <<E
 	sshCommand = ssh -i ${SSH_DIR}/id_lvn -o IdentitiesOnly=yes
 EOF
 
+write_file "${USER_HOME}/.gitconfig-personal" 0644 "${USER_NAME}:${USER_NAME}" <<EOF || true
+[user]
+	email = ${GIT_PERSONAL_EMAIL}
+	name = ${GIT_PERSONAL_NAME}
+[core]
+	sshCommand = ssh -i ${SSH_DIR}/id_personal -o IdentitiesOnly=yes
+EOF
+
 write_file "${USER_HOME}/.gitconfig" 0644 "${USER_NAME}:${USER_NAME}" <<EOF || true
 [core]
 	excludesfile = ${USER_HOME}/.gitignore_global
@@ -108,6 +133,8 @@ write_file "${USER_HOME}/.gitconfig" 0644 "${USER_NAME}:${USER_NAME}" <<EOF || t
 	rebase = true
 [includeIf "gitdir:${USER_HOME}/lvn/"]
 	path = ${USER_HOME}/.gitconfig-skelar
+[includeIf "gitdir:${USER_HOME}/hq/"]
+	path = ${USER_HOME}/.gitconfig-personal
 EOF
 
 write_file "${USER_HOME}/.gitignore_global" 0644 "${USER_NAME}:${USER_NAME}" <<'EOF' || true
@@ -133,7 +160,7 @@ as_user direnv allow "${USER_HOME}/lvn" 2>/dev/null \
 # ---------------------------------------------------------- output --------
 section "public keys — add these to GitHub"
 echo
-for k in id_lvn id_gh id_pt; do
+for k in id_lvn id_gh id_personal id_pt; do
   [[ -f "${SSH_DIR}/${k}.pub" ]] || continue
   echo "  ${k}:"
   echo "    $(cat "${SSH_DIR}/${k}.pub")"
@@ -142,5 +169,6 @@ echo
 echo "  After 'gh auth login' they can be added with a single command:"
 echo "    gh ssh-key add ~/.ssh/id_lvn.pub --title 'shibuya-pi (skelar)'"
 echo "    gh ssh-key add ~/.ssh/id_gh.pub  --title 'shibuya-pi (personal)'"
+echo "    gh ssh-key add ~/.ssh/id_personal.pub --title 'shibuya-pi (hq)'   # personal account!"
 
 ok "70-identity done"
