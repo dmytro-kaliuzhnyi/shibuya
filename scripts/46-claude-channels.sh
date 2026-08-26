@@ -309,10 +309,12 @@ EOF
 
 write_user_file ".config/systemd/user/ranok.timer" 0644 <<'EOF'
 [Unit]
-Description=Ранкова рутина о 08:00
+Description=Ранкова рутина о 08:15
 
 [Timer]
-OnCalendar=*-*-* 08:00
+# Після slack-loop о 08:00: рутина читає свіжий дайджест,
+# тож має йти другою, інакше подивиться на вчорашній.
+OnCalendar=*-*-* 08:15
 AccuracySec=5min
 Persistent=true
 
