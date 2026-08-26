@@ -252,6 +252,46 @@ if [ -d "/run/user/${UID_N}" ]; then
   fi
 fi
 
+section "systemd: щоденна ротація сесії"
+# Жива сесія накопичує контекст із кожним повідомленням у Telegram.
+# Сама вона не вмирає, тож без ротації колись доросте до автокомпакції,
+# а компакція — це теж витрата. Стан живе у файлах репо, тож перезапуск
+# нічого не втрачає: дешевше починати добу з чистого контексту.
+write_user_file ".config/systemd/user/hq-assistant-rotate.service" 0644 <<EOF
+[Unit]
+Description=Щоденна ротація сесії асистента (скидання контексту)
+
+[Service]
+Type=oneshot
+Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/tmux kill-session -t hq
+ExecStartPost=${USER_HOME}/bin/hq-assistant.sh
+SuccessExitStatus=0 1
+EOF
+
+write_user_file ".config/systemd/user/hq-assistant-rotate.timer" 0644 <<'EOF'
+[Unit]
+Description=Перезапускати сесію асистента щодня вдосвіта
+
+[Timer]
+OnCalendar=*-*-* 05:10
+AccuracySec=10min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/systemd"
+if [ -d "/run/user/${UID_N}" ]; then
+  uctl daemon-reload || true
+  if uctl enable --now hq-assistant-rotate.timer >/dev/null 2>&1; then
+    ok "ротація сесії: щодня о 05:10"
+  else
+    warn "hq-assistant-rotate.timer не увімкнувся"
+  fi
+fi
+
 section "підсумок"
 as_user bash -lc 'command -v bun >/dev/null' \
   && ok "bun у PATH" \
