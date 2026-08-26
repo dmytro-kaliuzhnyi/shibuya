@@ -292,6 +292,44 @@ if [ -d "/run/user/${UID_N}" ]; then
   fi
 fi
 
+section "systemd: ранкова рутина"
+# /ranok читає лише файли репо, тож мак для нього не потрібен —
+# хай робить Pi, який завжди ввімкнений, і шле підсумок у Telegram.
+write_user_file ".config/systemd/user/ranok.service" 0644 <<EOF
+[Unit]
+Description=Ранкова рутина: пріоритети дня в Telegram
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${USER_HOME}/hq/scripts/ranok.sh
+TimeoutStartSec=600
+EOF
+
+write_user_file ".config/systemd/user/ranok.timer" 0644 <<'EOF'
+[Unit]
+Description=Ранкова рутина о 08:00
+
+[Timer]
+OnCalendar=*-*-* 08:00
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/systemd"
+if [ -d "/run/user/${UID_N}" ]; then
+  uctl daemon-reload || true
+  if uctl enable --now ranok.timer >/dev/null 2>&1; then
+    ok "ранкова рутина: щодня о 08:00"
+  else
+    warn "ranok.timer не увімкнувся"
+  fi
+fi
+
 section "підсумок"
 as_user bash -lc 'command -v bun >/dev/null' \
   && ok "bun у PATH" \
