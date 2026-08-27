@@ -131,6 +131,16 @@ ExecStart=${USER_HOME}/bin/hq-assistant.sh
 # exit 1 = канал не піднявся. Не тягнемо це в "failed" юніта:
 # наступний тік таймера спробує знову.
 SuccessExitStatus=0 1
+# ⚠️ Обовʼязково. Лаунчер піднімає tmux-сервер, і той лишається дитиною цього
+# юніта. У oneshot без RemainAfterExit юніт деактивується одразу після
+# ExecStart, а типовий KillMode=control-group добиває все, що лишилось у
+# cgroup — тобто щойно піднятий tmux-сервер. Наслідок: КОЖЕН systemd-старт
+# асистента вбивав сам себе, і сесія трималась виключно на ручних запусках.
+# Перевірено на Pi 27.08.2026 окремим юнітом на сокеті `tmux -L killtest`:
+# без директиви — "no server running", з нею — сесія живе.
+# RemainAfterExit тут не годиться: юніт лишався б active, а таймер із
+# OnUnitActiveSec більше ніколи б не спрацював.
+KillMode=process
 EOF
 
 write_user_file ".config/systemd/user/hq-assistant.timer" 0644 <<'EOF'
@@ -173,6 +183,113 @@ else
     ok "таймер увімкнено: $(uctl list-timers hq-assistant.timer --no-pager 2>/dev/null | sed -n 2p | cut -c1-60)"
   else
     warn "таймер не увімкнувся — перевір: systemctl --user status hq-assistant.timer"
+  fi
+fi
+
+section "systemd: health-check каналу"
+# Сценарій, якого головний юніт не ловить: claude живий, tmux-сесія на місці,
+# але MCP-сервер плагіна помер — бот мовчить при «працюючому» сервісі.
+# Був створений руками на Pi 27.08.2026 під час розбору «бот замовк» і довго
+# лишався поза цим скриптом: deploy його не знав, а він тим часом щоп'ять
+# хвилин смикав hq-assistant.service. Разом із відсутнім KillMode=process це
+# давало нескінченний цикл kill/recreate, у якому нікуди було підчепитись.
+# Тепер юніт живе тут.
+write_user_file ".local/bin/hq-assistant-health.sh" 0755 <<'HEALTH'
+#!/usr/bin/env bash
+# Health-check Telegram-каналу асистента.
+# Сценарій, який головний юніт НЕ ловить: claude живий, tmux-сесія на
+# місці, але MCP-сервер плагіна telegram помер -> бот мовчить при
+# "працюючому" сервісі. Тут це видно і лікується рестартом.
+#
+#   DRYRUN=1  — тільки лог, без рестарту (для тесту).
+set -uo pipefail
+
+SESSION="hq"
+SVC="hq-assistant.service"
+GRACE=90            # не чіпати юніт перші GRACE с після його старту
+RECHECK=15          # один пропуск — не привід; передивитись через стільки с
+
+log(){ printf '%s health: %s\n' "$(date +%H:%M:%S)" "$*"; }
+
+mcp_up(){
+  pgrep -f "claude-plugins-official/telegram" >/dev/null 2>&1 && return 0
+  pgrep -f "bun server\.ts"                   >/dev/null 2>&1 && return 0
+  return 1
+}
+
+restart(){
+  if [ "${DRYRUN:-0}" = 1 ]; then log "DRYRUN: тут був би 'systemctl --user restart $SVC'"; exit 0; fi
+  log "рестарт $SVC"
+  systemctl --user restart "$SVC"
+}
+
+# 1. Сесії нема — це турбота головного юніта (Restart=on-failure + enable).
+#    Тільки підстрахуємось, якщо сервіс раптом зовсім не активний.
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  if ! systemctl --user is-active --quiet "$SVC"; then
+    log "нема ні сесії, ні активного сервісу — start $SVC"
+    [ "${DRYRUN:-0}" = 1 ] || systemctl --user start "$SVC"
+  else
+    log "сесії нема, але сервіс active — лишаю головному юніту"
+  fi
+  exit 0
+fi
+
+# 2. Юніт щойно піднявся — MCP міг не встигнути. Пропускаємо тік.
+ENTER="$(systemctl --user show "$SVC" -p ActiveEnterTimestamp --value)"
+EPOCH="$(date -d "$ENTER" +%s 2>/dev/null || echo 0)"
+if [ "$EPOCH" -gt 0 ]; then
+  AGE=$(( $(date +%s) - EPOCH ))
+  if [ "$AGE" -lt "$GRACE" ]; then
+    log "юніт піднявся ${AGE}с тому (<${GRACE}) — пропускаю перевірку"
+    exit 0
+  fi
+fi
+
+# 3. Сесія жива. Канал?
+mcp_up && exit 0
+
+log "MCP-канал не видно — передивлюсь через ${RECHECK}с"
+sleep "$RECHECK"
+if mcp_up; then log "канал зʼявився — ок"; exit 0; fi
+
+log "канал мертвий при живій сесії '$SESSION'"
+restart
+HEALTH
+ok "~/.local/bin/hq-assistant-health.sh"
+
+write_user_file ".config/systemd/user/hq-assistant-health.service" 0644 <<EOF
+[Unit]
+Description=Health-check Telegram-каналу асистента (лікує "тишу при живому боті")
+After=hq-assistant.service
+
+[Service]
+Type=oneshot
+Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${USER_HOME}/.local/bin/hq-assistant-health.sh
+EOF
+
+write_user_file ".config/systemd/user/hq-assistant-health.timer" 0644 <<'EOF'
+[Unit]
+Description=Перевіряти канал асистента кожні 5 хвилин
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/systemd"
+if [ -d "/run/user/${UID_N}" ]; then
+  uctl daemon-reload || true
+  if uctl enable --now hq-assistant-health.timer >/dev/null 2>&1; then
+    ok "health-check каналу: кожні 5 хв"
+  else
+    warn "hq-assistant-health.timer не увімкнувся"
   fi
 fi
 
@@ -267,6 +384,10 @@ Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/u
 ExecStart=/usr/bin/tmux kill-session -t hq
 ExecStartPost=${USER_HOME}/bin/hq-assistant.sh
 SuccessExitStatus=0 1
+# Та сама причина, що й у hq-assistant.service: без цього ротація вбивала
+# сесію і не піднімала назад — ExecStartPost створював tmux-сервер, а
+# деактивація oneshot одразу його прибирала.
+KillMode=process
 EOF
 
 write_user_file ".config/systemd/user/hq-assistant-rotate.timer" 0644 <<'EOF'
