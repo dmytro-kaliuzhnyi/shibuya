@@ -332,6 +332,47 @@ if [ -d "/run/user/${UID_N}" ]; then
   fi
 fi
 
+section "systemd: щоденна звірка прогнозів з decisions/"
+# У файлах decisions/ є «Дата перевірки» для кожного прогнозу, але сам репозиторій
+# про неї не нагадає — а tyzhden прямо каже, що звірка прогнозів не формальність.
+# Скрипт мовчить, поки жодна дата не настала, тож спаму не буде. /ranok читає той
+# самий скрипт; окремий таймер — це страховка на випадок, що ранкова рутина впаде.
+write_user_file ".config/systemd/user/decision-review.service" 0644 <<EOF
+[Unit]
+Description=Нагадати про рішення, у яких настала дата перевірки прогнозу
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=${USER_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${USER_HOME}/hq/scripts/decision-review.py --notify
+EOF
+
+write_user_file ".config/systemd/user/decision-review.timer" 0644 <<'EOF'
+[Unit]
+Description=Щоденна звірка дат перевірки в decisions/
+
+[Timer]
+# Після ранкової рутини о 08:15: якщо вона вже впоралась, це тихий дубль
+# (скрипт майже завжди мовчить); якщо впала — нагадування все одно прийде.
+OnCalendar=*-*-* 08:25
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/systemd"
+if [ -d "/run/user/${UID_N}" ]; then
+  uctl daemon-reload || true
+  if uctl enable --now decision-review.timer >/dev/null 2>&1; then
+    ok "звірка прогнозів: щодня о 08:25"
+  else
+    warn "decision-review.timer не увімкнувся"
+  fi
+fi
+
 section "підсумок"
 as_user bash -lc 'command -v bun >/dev/null' \
   && ok "bun у PATH" \
