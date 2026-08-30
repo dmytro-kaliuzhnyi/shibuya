@@ -19,9 +19,11 @@ TOKEN="${USER_HOME}/.config/hq-telegram/token"
 # потрібен ВЛАСНИЙ бот — інакше вони крадуть повідомлення один в одного.
 
 section "передумови"
-as_user test -x "${USER_HOME}/hq/scripts/tg-poll.py" \
-  && ok "є hq/scripts/tg-poll.py" \
-  || { warn "немає hq/scripts/tg-poll.py — зроби git pull у ~/hq"; }
+for f in tg-gateway.py tg-dispatch.py hq_bus.py; do
+  as_user test -e "${USER_HOME}/hq/scripts/${f}" \
+    && ok "є hq/scripts/${f}" \
+    || warn "немає hq/scripts/${f} — зроби git pull у ~/hq"
+done
 
 HAVE_TOKEN=0
 if as_user test -s "$TOKEN"; then
@@ -37,20 +39,39 @@ else
   warn "  Юніт поставлю, але вмикати не буду."
 fi
 
-section "systemd: демон полінгу"
-write_user_file ".config/systemd/user/tg-direct.service" 0644 <<EOF
+section "systemd: шлюз і диспетчер"
+# Два юніти, а не один: шлюз — тупий транспорт, який не має змінюватись
+# ніколи; диспетчер міститиме правила й змінюватиметься часто. Розділені,
+# щоб перезапуск диспетчера не рвав довгий полінг і не губив оновлень.
+write_user_file ".config/systemd/user/tg-gateway.service" 0644 <<EOF
 [Unit]
-Description=Прямий канал HQ - Telegram (полінг, без MCP)
+Description=Шлюз Telegram: getUpdates -> шина, шина -> sendMessage
 After=network-online.target
 
 [Service]
 Type=simple
 Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=${USER_HOME}/hq/scripts/tg-poll.py
+ExecStart=${USER_HOME}/hq/scripts/tg-gateway.py
 Restart=always
 RestartSec=15
-# Полінг довгий (50 с), тому зупинку даємо пережити спокійно.
-TimeoutStopSec=70
+# Полінг довгий, тож даємо зупинці дожити цикл, а не рвемо на середині.
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target
+EOF
+
+write_user_file ".config/systemd/user/tg-dispatch.service" 0644 <<EOF
+[Unit]
+Description=Диспетчер шини HQ: вердикти, команди, задачі
+After=tg-gateway.service
+
+[Service]
+Type=simple
+Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${USER_HOME}/hq/scripts/tg-dispatch.py
+Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=default.target
@@ -62,21 +83,25 @@ uctl() { as_user env XDG_RUNTIME_DIR="/run/user/${UID_N}" systemctl --user "$@";
 if [ -d "/run/user/${UID_N}" ]; then
   uctl daemon-reload >/dev/null 2>&1 || true
   if [ "$HAVE_TOKEN" = 1 ]; then
-    if uctl enable --now tg-direct.service >/dev/null 2>&1; then
-      ok "демон запущено: $(uctl is-active tg-direct.service)"
-    else
-      warn "не запустився — systemctl --user status tg-direct.service"
-    fi
+    for u in tg-gateway tg-dispatch; do
+      if uctl enable --now "${u}.service" >/dev/null 2>&1; then
+        ok "${u}: $(uctl is-active ${u}.service)"
+      else
+        warn "${u} не запустився — systemctl --user status ${u}.service"
+      fi
+    done
   else
-    uctl disable tg-direct.service >/dev/null 2>&1 || true
-    skip "юніт записано, але без токена не вмикаю"
+    for u in tg-gateway tg-dispatch; do
+      uctl disable "${u}.service" >/dev/null 2>&1 || true
+    done
+    skip "юніти записано, але без токена не вмикаю"
   fi
 else
   warn "немає /run/user/${UID_N} — увімкни вручну після логіну:"
-  warn "  systemctl --user enable --now tg-direct.service"
+  warn "  systemctl --user enable --now tg-gateway.service tg-dispatch.service"
 fi
 
 section "перевірка"
-echo "  ~/hq/scripts/tg-poll.py --check      # бот, chat_id, чи живий плагін"
-echo "  ~/hq/scripts/tg-poll.py --once       # один цикл вручну"
-echo "  journalctl --user -u tg-direct -f    # що приходить"
+echo "  ~/hq/scripts/tg-gateway.py --check         # бот, chat_id, стан черг"
+echo "  ~/hq/scripts/tg-dispatch.py --dry-run      # які рішення, нічого не застосовуючи"
+echo "  journalctl --user -u tg-gateway -u tg-dispatch -f"
