@@ -17,7 +17,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${ROOT}/lib/common.sh"
 
 # Phase A — what gets done at home, while the Pi is within reach.
-PHASE_A=(00-base 10-mosh-tmux 20-hardening 30-tailscale 40-devtools 45-claude-sync 46-claude-channels 50-cloud 60-docker 70-identity)
+PHASE_A=(00-base 10-mosh-tmux 20-hardening 30-tailscale 40-devtools 45-claude-sync 46-claude-channels 47-timesheet 50-cloud 60-docker 70-identity)
 
 usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
