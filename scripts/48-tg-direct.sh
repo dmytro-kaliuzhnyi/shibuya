@@ -19,7 +19,7 @@ TOKEN="${USER_HOME}/.config/hq-telegram/token"
 # потрібен ВЛАСНИЙ бот — інакше вони крадуть повідомлення один в одного.
 
 section "передумови"
-for f in tg-gateway.py tg-dispatch.py hq_bus.py; do
+for f in tg-gateway.py tg-dispatch.py tg-worker.py hq_bus.py; do
   as_user test -e "${USER_HOME}/hq/scripts/${f}" \
     && ok "є hq/scripts/${f}" \
     || warn "немає hq/scripts/${f} — зроби git pull у ~/hq"
@@ -77,13 +77,31 @@ RestartSec=10
 WantedBy=default.target
 EOF
 
+write_user_file ".config/systemd/user/tg-worker.service" 0644 <<EOF
+[Unit]
+Description=Воркер шини HQ: розмова, запис у areas/, відповідь
+After=tg-dispatch.service
+
+[Service]
+Type=simple
+Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${USER_HOME}/hq/scripts/tg-worker.py
+Restart=always
+RestartSec=20
+# Один прогін claude -p буває довгим; вбивати на середині — втратити відповідь.
+TimeoutStopSec=650
+
+[Install]
+WantedBy=default.target
+EOF
+
 chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/systemd"
 uctl() { as_user env XDG_RUNTIME_DIR="/run/user/${UID_N}" systemctl --user "$@"; }
 
 if [ -d "/run/user/${UID_N}" ]; then
   uctl daemon-reload >/dev/null 2>&1 || true
   if [ "$HAVE_TOKEN" = 1 ]; then
-    for u in tg-gateway tg-dispatch; do
+    for u in tg-gateway tg-dispatch tg-worker; do
       if uctl enable --now "${u}.service" >/dev/null 2>&1; then
         ok "${u}: $(uctl is-active ${u}.service)"
       else
@@ -91,17 +109,18 @@ if [ -d "/run/user/${UID_N}" ]; then
       fi
     done
   else
-    for u in tg-gateway tg-dispatch; do
+    for u in tg-gateway tg-dispatch tg-worker; do
       uctl disable "${u}.service" >/dev/null 2>&1 || true
     done
     skip "юніти записано, але без токена не вмикаю"
   fi
 else
   warn "немає /run/user/${UID_N} — увімкни вручну після логіну:"
-  warn "  systemctl --user enable --now tg-gateway.service tg-dispatch.service"
+  warn "  systemctl --user enable --now tg-gateway.service tg-dispatch.service tg-worker.service"
 fi
 
 section "перевірка"
 echo "  ~/hq/scripts/tg-gateway.py --check         # бот, chat_id, стан черг"
 echo "  ~/hq/scripts/tg-dispatch.py --dry-run      # які рішення, нічого не застосовуючи"
-echo "  journalctl --user -u tg-gateway -u tg-dispatch -f"
+echo "  ~/hq/scripts/tg-worker.py --dry-run       # які задачі в черзі"
+echo "  journalctl --user -u tg-gateway -u tg-dispatch -u tg-worker -f"
