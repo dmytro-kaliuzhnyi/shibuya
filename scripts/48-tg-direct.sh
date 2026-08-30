@@ -103,7 +103,9 @@ if [ -d "/run/user/${UID_N}" ]; then
   if [ "$HAVE_TOKEN" = 1 ]; then
     for u in tg-gateway tg-dispatch tg-worker; do
       if uctl enable --now "${u}.service" >/dev/null 2>&1; then
-        ok "${u}: $(uctl is-active ${u}.service)"
+        # is-active віддає 3 для "activating", і під set -e це виглядає
+        # як провал деплою, хоча юніт просто ще стартує.
+        ok "${u}: $(uctl is-active "${u}.service" 2>/dev/null || true)"
       else
         warn "${u} не запустився — systemctl --user status ${u}.service"
       fi
