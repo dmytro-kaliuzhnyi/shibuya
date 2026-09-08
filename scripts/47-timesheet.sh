@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Вечірній збір годин Liven: таймер + пуш на схвалення в Telegram.
+# Ранковий збір годин Liven: таймер + пуш на схвалення в Telegram.
 set -Eeuo pipefail
 source "${SHIBUYA_ROOT:?}/lib/common.sh"
 require_root
@@ -15,6 +15,8 @@ UID_N="$(id -u "$USER_NAME")"
 #
 # Чому раз на день, а не кожні 30 хв як Slack: підтвердження годин — це один
 # список за день. Пушити його частіше означає питати те саме по колу.
+# Чому вранці, а не ввечері: о 09:00 учорашній день уже закритий і повністю
+# синхнутий, тож нічого не випадає, і оцінюєш його на свіжу голову.
 
 section "перевірка передумов"
 for f in hq/scripts/time-loop.sh hq/scripts/time-claude.py \
@@ -32,7 +34,7 @@ as_user test -d "${USER_HOME}/.claude-work" \
 section "systemd: збір годин раз на день"
 write_user_file ".config/systemd/user/timesheet-day.service" 0644 <<EOF
 [Unit]
-Description=Збір годин Liven за день і пуш на схвалення в Telegram
+Description=Збір годин Liven за вчора і пуш на схвалення в Telegram
 After=network-online.target
 
 [Service]
@@ -42,14 +44,15 @@ ExecStart=${USER_HOME}/hq/scripts/time-loop.sh
 TimeoutStartSec=1200
 EOF
 
-# 21:00 — після робочого дня, але поки він ще памʼятається. Persistent=true:
-# якщо Pi лежав, зібрати при першій нагоді, інакше день просто зникне.
+# 09:00 — учорашній день закритий і синхнутий, оцінюєш на свіжу голову.
+# Persistent=true: якщо Pi лежав, зібрати при першій нагоді (за той день,
+# що на момент запуску буде «вчора»), інакше день просто зникне.
 write_user_file ".config/systemd/user/timesheet-day.timer" 0644 <<'EOF'
 [Unit]
-Description=Збирати години Liven щовечора
+Description=Збирати години Liven щоранку
 
 [Timer]
-OnCalendar=*-*-* 21:00
+OnCalendar=*-*-* 09:00
 AccuracySec=5min
 Persistent=true
 
