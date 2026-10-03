@@ -81,11 +81,19 @@ head_ "tools"
 for t in mosh-server tmux zsh git gh docker kubectl gcloud helm k9s node npm rg fdfind batcat nvim direnv jq; do
   command -v "$t" >/dev/null 2>&1 && chk "$t" || bad "$t is missing"
 done
-for t in claude omc uv pulumi; do
+for t in claude uv pulumi; do
   if command -v "$t" >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/$t" ]] || [[ -x "$HOME/.pulumi/bin/$t" ]]; then
     chk "$t"
   else
     bad "$t is missing"
+  fi
+done
+
+for t in omc; do
+  if command -v "$t" >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/$t" ]]; then
+    bad "$t is still installed (dropped 2026-10-03)"
+  else
+    chk "no $t"
   fi
 done
 

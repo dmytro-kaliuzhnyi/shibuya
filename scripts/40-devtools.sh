@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Working toolchain: node, Claude Code, OMC, gh, direnv and CLI comfort.
+# Working toolchain: node, Claude Code, gh, direnv and CLI comfort.
 set -Eeuo pipefail
 source "${SHIBUYA_ROOT:?}/lib/common.sh"
 require_root
@@ -82,14 +82,23 @@ else
 fi
 
 # ------------------------------------------------------------- OMC --------
-section "oh-my-claudecode"
+# OMC was dropped on 2026-10-03: native subagents/Workflow cover it. Remove leftovers.
+section "oh-my-claudecode (removal)"
 if as_user test -x "${USER_HOME}/.local/bin/omc"; then
-  skip "omc already installed: $(as_user "${USER_HOME}/.local/bin/omc" --version 2>/dev/null || echo '?')"
+  as_user npm uninstall -g oh-my-claude-sisyphus >/dev/null 2>&1 \
+    && ok "omc uninstalled" \
+    || warn "omc uninstall failed — do it by hand: npm uninstall -g oh-my-claude-sisyphus"
 else
-  as_user npm install -g oh-my-claude-sisyphus >/dev/null 2>&1 \
-    && ok "omc installed: $(as_user "${USER_HOME}/.local/bin/omc" --version 2>/dev/null || echo '?')" \
-    || warn "omc install failed — do it by hand: npm i -g oh-my-claude-sisyphus"
+  skip "omc not installed"
 fi
+# claude-sync does not propagate deletions, so these linger on the Pi.
+for d in .claude/skills/omc-reference .config/claude-omc .omc-state; do
+  if as_user test -e "${USER_HOME}/${d}"; then
+    as_user rm -rf "${USER_HOME}/${d}" && ok "removed ~/${d}"
+  else
+    skip "~/${d} absent"
+  fi
+done
 
 # --------------------------------------------------------------- gh -------
 # GitHub serves the key already dearmored — do not run it through gpg --dearmor.
