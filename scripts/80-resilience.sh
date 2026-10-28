@@ -196,83 +196,9 @@ EOF
   fi
 fi
 
-# ------------------------------------------------------- self-healing -----
-# The last line of defence before a drive to my parents': if the network is gone
-# and has not come back, restart networkd; if that does not help either, reboot.
-# The cooldown is mandatory, otherwise this turns into a reboot loop.
-section "network self-healing"
-write_file /usr/local/bin/shibuya-netcheck 0755 <<'EOF'
-#!/usr/bin/env bash
-# Checks connectivity. Three failures in a row -> restart networking. Six -> reboot.
-set -uo pipefail
-
-STATE=/etc/shibuya/state
-FAILS="${STATE}/netcheck-fails"
-LAST_REBOOT="${STATE}/netcheck-last-reboot"
-mkdir -p "$STATE"
-
-alive() {
-  ping -c1 -W5 1.1.1.1  >/dev/null 2>&1 && return 0
-  ping -c1 -W5 8.8.8.8  >/dev/null 2>&1 && return 0
-  # DNS separately: packets sometimes flow while resolution is broken.
-  getent hosts one.one.one.one >/dev/null 2>&1 && return 0
-  return 1
-}
-
-if alive; then
-  echo 0 > "$FAILS"
-  exit 0
-fi
-
-n=$(( $(cat "$FAILS" 2>/dev/null || echo 0) + 1 ))
-echo "$n" > "$FAILS"
-logger -t shibuya-netcheck "no connectivity, failure #${n}"
-
-if [[ $n -eq 3 ]]; then
-  logger -t shibuya-netcheck "restarting systemd-networkd"
-  systemctl restart systemd-networkd
-  systemctl restart tailscaled 2>/dev/null || true
-fi
-
-if [[ $n -ge 6 ]]; then
-  # At most once an hour — otherwise the machine loops through reboots and becomes
-  # more reliably unreachable than the network fault itself would make it.
-  now=$(date +%s)
-  last=$(cat "$LAST_REBOOT" 2>/dev/null || echo 0)
-  if (( now - last > 3600 )); then
-    echo "$now" > "$LAST_REBOOT"
-    echo 0 > "$FAILS"
-    logger -t shibuya-netcheck "still no connectivity after restarting networking — rebooting"
-    systemctl reboot
-  else
-    logger -t shibuya-netcheck "reboot skipped: the last one was less than an hour ago"
-  fi
-fi
-EOF
-
-write_file /etc/systemd/system/shibuya-netcheck.service 0644 <<'EOF'
-[Unit]
-Description=Connectivity check with self-recovery
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/shibuya-netcheck
-EOF
-
-write_file /etc/systemd/system/shibuya-netcheck.timer 0644 <<'EOF'
-[Unit]
-Description=Check connectivity every 5 minutes
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=5min
-
-[Install]
-WantedBy=timers.target
-EOF
-
-systemctl daemon-reload
-enable_now shibuya-netcheck.timer
+# Network self-healing moved to 81-netcheck.sh (2026-10-28): it is the only
+# part worth redeploying on a remote Pi, and redeploying THIS script reruns
+# netplan try, which can cut the machine off.
 
 ok "80-resilience done"
 echo

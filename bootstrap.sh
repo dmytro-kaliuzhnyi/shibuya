@@ -8,8 +8,9 @@
 #   sudo ~/shibuya/bootstrap.sh --list          # see what exists
 #
 # Everything is idempotent: re-running is safe and almost silent.
-# Scripts 80/90 are NOT part of the default set — they are phase B (preparing for the move),
-# run them separately and deliberately: sudo ./bootstrap.sh --only 80
+# Scripts 80/81/90 are NOT part of the default set — they are phase B (preparing for the move),
+# run them separately and deliberately: sudo ./bootstrap.sh --only 80, then --only 81
+# (network self-healing; safe to redeploy on its own, unlike 80 which reruns netplan try).
 
 set -Eeuo pipefail
 

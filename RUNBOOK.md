@@ -51,9 +51,11 @@ Cheapest first.
    [admin console](https://login.tailscale.com/admin/machines); key expiry for `shibuya`
    should be **disabled**.
 4. **The machine does not answer at all.** Self-healing (`shibuya-netcheck.timer`) restarts
-   networking after 15 minutes without connectivity and reboots the machine after 30. The
-   watchdog reboots on a kernel hang. So waiting ~30 minutes is a deliberate strategy, not
-   doing nothing.
+   networking after 15 minutes without connectivity and reboots the machine after 30. If the
+   internet is still gone, further reboots come only after 1h, 2h, 4h, 8h, then every 12h
+   (`81-netcheck.sh`): during a power cut the router is dead and rebooting does not help.
+   The watchdog reboots on a kernel hang. So waiting ~30 minutes is a deliberate strategy,
+   not doing nothing.
 5. **Nothing helped** — call my parents: "pull the power out of the little box, wait ten
    seconds, plug it back in."
 

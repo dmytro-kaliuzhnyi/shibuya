@@ -34,25 +34,29 @@ as_user test -d "${USER_HOME}/.claude-work" \
 section "systemd: збір годин раз на день"
 write_user_file ".config/systemd/user/timesheet-day.service" 0644 <<EOF
 [Unit]
-Description=Збір годин Liven за вчора і пуш на схвалення в Telegram
+Description=Збір незібраних днів Liven і пуш на схвалення в Telegram
 After=network-online.target
 
 [Service]
 Type=oneshot
 Environment=PATH=${USER_HOME}/.local/bin:${USER_HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=${USER_HOME}/hq/scripts/time-loop.sh
-TimeoutStartSec=1200
+# Після простою добирається до 14 днів, кожен із викликами моделі.
+TimeoutStartSec=3h
 EOF
 
 # 09:00 — учорашній день закритий і синхнутий, оцінюєш на свіжу голову.
-# Persistent=true: якщо Pi лежав, зібрати при першій нагоді (за той день,
-# що на момент запуску буде «вчора»), інакше день просто зникне.
+# Далі щогодини до 21:00: time-loop.sh ВІДКЛАДАЄ збір, коли джерела неповні
+# (нема NTP, R2, git чи живого логіна Claude), і наступна година добирає.
+# Прогін, якому нічого збирати, виходить за мить — пам'ятає останній зібраний
+# день у ~/hq/work/liven/.last-collected і після простою добирає всі пропущені.
+# Persistent=true: якщо Pi лежав, запуститись при першій нагоді.
 write_user_file ".config/systemd/user/timesheet-day.timer" 0644 <<'EOF'
 [Unit]
-Description=Збирати години Liven щоранку
+Description=Збирати години Liven: 09:00, далі щогодини до 21:00 добирати відкладене
 
 [Timer]
-OnCalendar=*-*-* 09:00
+OnCalendar=*-*-* 09..21:00
 AccuracySec=5min
 Persistent=true
 
