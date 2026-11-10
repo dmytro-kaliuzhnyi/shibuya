@@ -22,12 +22,16 @@ if [[ ! -f "$ENVF" ]]; then
 # without these details the machine will come up at their place WITH NO NETWORK AT ALL.
 PARENTS_WIFI_SSID=""
 PARENTS_WIFI_PSK=""
+# The parents' 5 GHz network. The Pi's Wi-Fi chip connects to it reliably; the
+# 2.4 GHz one has rejected it since 2026-11. PSK defaults to PARENTS_WIFI_PSK.
+PARENTS_WIFI5_SSID=""
+PARENTS_WIFI5_PSK=""
 
 # The home WiFi stays, so the Pi works in both locations.
 HOME_WIFI_SSID="autostrada"
 HOME_WIFI_PSK=""
 
-# Telegram notifications: boot, public IP changes, daily heartbeat.
+# Telegram notifications: boot and daily heartbeat (both include the public IP).
 # The bot is created with @BotFather, the chat_id comes from @userinfobot.
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_CHAT_ID=""
@@ -38,17 +42,49 @@ fi
 
 # shellcheck disable=SC1090
 source "$ENVF"
+PARENTS_WIFI5_PSK="${PARENTS_WIFI5_PSK:-${PARENTS_WIFI_PSK:-}}"
+
+# --------------------------------------------------- cloud-init netplan ---
+# cloud-init's 50-cloud-init.yaml also defines wlan0 and set regulatory-domain
+# "UA". netplan merges it with ours, so dropping the key only from our file is
+# not enough. The Pi's Wi-Fi firmware rejects UA anyway ("Firmware rejected
+# country setting" in dmesg). Stop cloud-init from regenerating the file, then
+# strip the key.
+section "network: cloud-init leftovers"
+write_file /etc/cloud/cloud.cfg.d/99-shibuya-disable-network-config.cfg 0644 <<'EOF'
+# shibuya: networking is owned by /etc/netplan/60-shibuya.yaml (80-resilience.sh).
+network: {config: disabled}
+EOF
+CI_NP=/etc/netplan/50-cloud-init.yaml
+if [[ -f "$CI_NP" ]] && grep -q 'regulatory-domain' "$CI_NP"; then
+  backup_file "$CI_NP"
+  sed -i '/regulatory-domain/d' "$CI_NP"
+  ok "regulatory-domain removed from ${CI_NP}"
+else
+  skip "no regulatory-domain in ${CI_NP}"
+fi
 
 # ------------------------------------------------------------ netplan -----
 # The most dangerous point of the whole move: if no known network exists at my
 # parents' place, the machine comes up offline and can only be fixed physically.
-section "network: two SSIDs + ethernet"
+section "network: Wi-Fi networks + ethernet"
 if [[ -z "${PARENTS_WIFI_SSID:-}" || -z "${PARENTS_WIFI_PSK:-}" ]]; then
   warn "PARENTS_WIFI_SSID/PSK are empty in ${ENVF} — leaving netplan alone"
   warn "DO NOT MOVE THE MACHINE LIKE THIS: it will have no network at their place"
 else
   # Wired takes priority (lower metric): a stable link and predictable NAT for
   # port forwarding. WiFi is the automatic fallback.
+  # The 5 GHz network is listed only when its SSID is set. wpa_supplicant picks the
+  # best reachable network itself (5 GHz scores higher on estimated throughput),
+  # and a network that rejects it is temp-disabled, so the next one gets tried.
+  # No regulatory-domain: see the cloud-init section above.
+  AP5=""
+  if [[ -n "${PARENTS_WIFI5_SSID:-}" ]]; then
+    AP5="        \"${PARENTS_WIFI5_SSID}\":
+          auth:
+            key-management: \"psk\"
+            password: \"${PARENTS_WIFI5_PSK}\""
+  fi
   NP=/etc/netplan/60-shibuya.yaml
   write_file "$NP" 0600 <<EOF
 # shibuya: networking for two locations. Ethernet takes priority over WiFi.
@@ -67,7 +103,6 @@ network:
       dhcp4: true
       dhcp6: false
       optional: true
-      regulatory-domain: "UA"
       dhcp4-overrides:
         route-metric: 600
       access-points:
@@ -79,13 +114,14 @@ network:
           auth:
             key-management: "psk"
             password: "${PARENTS_WIFI_PSK}"
+${AP5}
 EOF
   if changed; then
     # netplan try rolls itself back after 120 seconds if the config kills connectivity.
     # netplan apply offers no such safety net — on a remote machine that is the
     # difference between "wait two minutes" and "drive to my parents".
     if timeout 150 netplan try --timeout 120 </dev/null >/dev/null 2>&1; then
-      ok "netplan accepted (both SSIDs + ethernet)"
+      ok "netplan accepted (Wi-Fi networks + ethernet)"
     else
       warn "netplan try was not confirmed — config rolled back, check it by hand"
     fi
@@ -100,7 +136,7 @@ for i in eth0 wlan0; do
 done
 
 # ------------------------------------------------------- notifications ----
-# The point: learn about a reboot or a public IP change BEFORE access is
+# The point: learn about a reboot BEFORE access is
 # actually needed. Otherwise the first sign of trouble is "I cannot get in
 # right now, exactly when I need to".
 section "Telegram notifications"
@@ -122,24 +158,15 @@ UP="$(uptime -p)"
 TEMP="$(awk '{printf "%.1f°C", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)"
 DISK="$(df -h / | awk 'NR==2{print $4" free ("$5" used)"}')"
 
-# The public IP is remembered: a change at my parents' place means the port
-# forward no longer points at our machine.
-PREV_FILE=/etc/shibuya/state/last-public-ip
-PREV="$(cat "$PREV_FILE" 2>/dev/null || echo '')"
-CHANGED=""
-[[ -n "$PREV" && "$PREV" != "$PUB_IP" ]] && CHANGED="
-
-*PUBLIC IP CHANGED:* \`${PREV}\` -> \`${PUB_IP}\`
-The port forward on the router may now point somewhere else."
-printf '%s' "$PUB_IP" > "$PREV_FILE"
-
+# No "public IP changed" notice: ifconfig.me answers over IPv6, and that address
+# changes with the interface (eth0 vs wlan0), so the notice was mostly noise.
 TEXT="*shibuya* (${REASON})
 Public IP: \`${PUB_IP}\`
 Tailscale: \`${TS_IP}\`
 LAN: \`${LAN_IP}\` via ${IFACE}
 Uptime: ${UP}
 Temperature: ${TEMP}
-Disk: ${DISK}${CHANGED}"
+Disk: ${DISK}"
 
 curl -fsS --max-time 15 \
   -d "chat_id=${TELEGRAM_CHAT_ID}" \

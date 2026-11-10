@@ -45,7 +45,7 @@ Cheapest first.
    tailscale status              # from the Mac
    nc -vz <public IP> <port>     # port forward
    ```
-2. **Did the public IP change?** A Telegram notification is sent when it does. After that
+2. **Did the public IP change?** Compare it with the "Public IP" line in the boot/heartbeat Telegram message. After a change
    the forward on my parents' router points nowhere — it needs the new IP, or DDNS.
 3. **Tailscale dropped.** Usually an expired node key. Check the
    [admin console](https://login.tailscale.com/admin/machines); key expiry for `shibuya`
@@ -58,6 +58,13 @@ Cheapest first.
    not doing nothing.
 5. **Nothing helped** — call my parents: "pull the power out of the little box, wait ten
    seconds, plug it back in."
+6. **It boots (login prompt on HDMI, green LED) but stays offline.** That is Wi-Fi, not
+   power. Log in on the console (user `koinoyokan171`) and run
+   `journalctl -u netplan-wpa-wlan0 -n 20`. `ASSOC-REJECT bssid=00:00:00:00:00:00
+   status_code=16` means the chip's firmware gave up before it ever reached the router.
+   The router logs nothing, and the password is usually fine. Fastest way back online: an
+   Ethernet cable into the router (eth0 is preconfigured and preferred). See the
+   2026-11-10 incident in `STATUS.md`.
 
 ### Locked myself out with the firewall
 

@@ -281,6 +281,29 @@ These cost time and may resurface:
   before adding the second disk to `BOOT_ORDER`: `fatlabel /dev/nvme0n1p1 nvme-boot`,
   `e2label /dev/nvme0n1p2 nvme-root`, then fix `root=LABEL=` in `cmdline.txt` and both
   lines in `fstab` on the new card.
+- **2026-11-10: offline for days, parents' 2.4 GHz Wi-Fi stopped accepting the Pi.**
+  After several power cuts the Pi booted fine but the parents' 2.4 GHz network (Keenetic Hopper)
+  rejected every attempt: `ASSOC-REJECT bssid=00:..:00 status_code=16`, about 0.4 s
+  after the connect request, and nothing in the router's log. The `netcheck` ladder
+  rebooted it 12 times for nothing. Ruled out: the password (checked by hand), 802.11r
+  (turned off and the scan confirmed it, still rejected), kernel/firmware/wpasupplicant
+  updates (none since September), and a dead chip (it connected to the 5 GHz network at once).
+  The exact router-side change was never found. Fixes:
+  - The Pi now prefers the 5 GHz network (`PARENTS_WIFI5_SSID` in `move.env`), with
+    the 2.4 GHz one and the home network as fallbacks.
+  - The router's 5 GHz channel is pinned to 36 (it was `Auto` at start, which landed
+    on DFS 52/108). 802.11r is off on the router and must stay off on the 5 GHz network.
+  - `regulatory-domain: UA` is gone. The BCM4345 firmware rejects it ("Firmware
+    rejected country setting"). cloud-init network config is disabled so
+    `50-cloud-init.yaml` stays as edited.
+  - Wi-Fi power save is off (`shibuya-wifi-powersave-off.service`). `netcheck` restarts
+    the supplicant on the 3rd failure and reloads `brcmfmac` on the 4th; the firmware
+    was seen wedged with `bcdc_msg failed w/status -110`.
+  - Verified: with the cable unplugged, a reboot came back on 5 GHz Wi-Fi in ~45 s, with
+    Tailscale up.
+  - The SD card was pulled out of the slot during the incident. With the duplicate
+    labels above it was a liability rather than a fallback. Rename the labels before
+    putting it back.
 
 ## Security
 

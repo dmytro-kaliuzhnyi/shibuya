@@ -49,9 +49,20 @@ echo "$n" > "$FAILS"
 logger -t shibuya-netcheck "no connectivity, failure #${n}"
 
 if [[ $n -eq 3 ]]; then
-  logger -t shibuya-netcheck "restarting systemd-networkd"
+  logger -t shibuya-netcheck "restarting systemd-networkd and the Wi-Fi supplicant"
   systemctl restart systemd-networkd
+  systemctl restart 'netplan-wpa-*.service' 2>/dev/null || true
   systemctl restart tailscaled 2>/dev/null || true
+fi
+
+# The brcmfmac firmware can wedge (dmesg: "bcdc_msg failed w/status -110"). A
+# driver reload is cheaper than a reboot and is skipped when ethernet carries us.
+if [[ $n -eq 4 ]] && ! grep -q 1 /sys/class/net/eth0/carrier 2>/dev/null; then
+  logger -t shibuya-netcheck "reloading the brcmfmac Wi-Fi driver"
+  modprobe -r brcmfmac_wcc 2>/dev/null
+  modprobe -r brcmfmac && sleep 2 && modprobe brcmfmac
+  sleep 5
+  systemctl restart 'netplan-wpa-*.service' 2>/dev/null || true
 fi
 
 if [[ $n -ge 6 ]]; then
@@ -94,7 +105,28 @@ OnUnitActiveSec=5min
 WantedBy=timers.target
 EOF
 
+section "Wi-Fi power save off"
+# brcmfmac turns power save on by default ("power save enabled" in dmesg). On a
+# server with no cable that means dropped packets and missed beacons. The unit is
+# tied to the wlan0 device, so it runs again after a driver reload.
+apt_install iw
+write_file /etc/systemd/system/shibuya-wifi-powersave-off.service 0644 <<'EOF'
+[Unit]
+Description=Disable Wi-Fi power saving on wlan0
+BindsTo=sys-subsystem-net-devices-wlan0.device
+After=sys-subsystem-net-devices-wlan0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/iw dev wlan0 set power_save off
+
+[Install]
+WantedBy=sys-subsystem-net-devices-wlan0.device
+EOF
+
 systemctl daemon-reload
+enable_now shibuya-wifi-powersave-off.service
 enable_now shibuya-netcheck.timer
 
 ok "81-netcheck done"
